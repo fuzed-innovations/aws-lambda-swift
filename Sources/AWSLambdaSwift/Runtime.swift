@@ -1,7 +1,7 @@
+import Dispatch
 import Foundation
-#if canImport(FoundationNetworking)
-    import FoundationNetworking
-#endif
+
+import SwiftyRequest
 
 public func log(_ object: Any, flush: Bool = false) {
     fputs("\(object)\n", stderr)
@@ -17,13 +17,11 @@ struct InvocationError: Codable {
 }
 
 public class Runtime {
-    let urlSession: URLSession
     let awsLambdaRuntimeAPI: String
     let handlerName: String
     var handlers: [String: Handler]
 
     public init() throws {
-        self.urlSession = URLSession(configuration: .default)
         self.handlers = [:]
 
         let environment = ProcessInfo.processInfo.environment
@@ -41,27 +39,53 @@ public class Runtime {
     }
 
     func getNextInvocation() throws -> (inputData: Data, responseHeaderFields: [AnyHashable: Any]) {
-        let getNextInvocationEndpoint = URL(string: "http://\(awsLambdaRuntimeAPI)/2018-06-01/runtime/invocation/next")!
-        let (optData, optResponse, optError) = urlSession.synchronousDataTask(with: getNextInvocationEndpoint)
-
-        guard optError == nil else {
-            throw RuntimeError.endpointError(optError!.localizedDescription)
+        
+        let request = RestRequest(method: .get,
+                                  url: "http://\(awsLambdaRuntimeAPI)/2018-06-01/runtime/invocation/next")
+        
+        let dispatch = DispatchSemaphore(value: 0)
+        
+        var error: RuntimeError? = nil
+        var data: Data? = nil
+        var headers: [String: Any] = [:]
+        
+        request.responseData { (result) in
+            switch result {
+            case .success(let success):
+                
+                data = success.body
+                
+                for (h, v) in success.headers {
+                    headers[h] = v
+                }
+                
+            case .failure(let failure):
+                error = RuntimeError.endpointError(failure.localizedDescription)
+            }
+            dispatch.signal()
         }
-
-        guard let inputData = optData else {
-            throw RuntimeError.missingData
+        
+        dispatch.wait()
+        
+        if let error = error {
+            throw error
         }
-
-        let httpResponse = optResponse as! HTTPURLResponse
-        return (inputData: inputData, responseHeaderFields: httpResponse.allHeaderFields)
+        
+        if let data = data {
+            return (inputData: data, responseHeaderFields: headers)
+        }
+        
+        throw RuntimeError.missingData
     }
 
     func postInvocationResponse(for requestId: String, httpBody: Data) {
-        let postInvocationResponseEndpoint = URL(string: "http://\(awsLambdaRuntimeAPI)/2018-06-01/runtime/invocation/\(requestId)/response")!
-        var urlRequest = URLRequest(url: postInvocationResponseEndpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.httpBody = httpBody
-        _ = urlSession.synchronousDataTask(with: urlRequest)
+        
+        let request = RestRequest(method: .post,
+                                  url: "http://\(awsLambdaRuntimeAPI)/2018-06-01/runtime/invocation/\(requestId)/response")
+        request.messageBody = httpBody
+        request.response { resp in
+            print(resp)
+        }
     }
 
     func postInvocationError(for requestId: String, error: Error) {
@@ -70,11 +94,13 @@ public class Runtime {
         let jsonEncoder = JSONEncoder()
         let httpBody = try! jsonEncoder.encode(invocationError)
 
-        let postInvocationErrorEndpoint = URL(string: "http://\(awsLambdaRuntimeAPI)/2018-06-01/runtime/invocation/\(requestId)/error")!
-        var urlRequest = URLRequest(url: postInvocationErrorEndpoint)
-        urlRequest.httpMethod = "POST"
-        urlRequest.httpBody = httpBody
-        _ = urlSession.synchronousDataTask(with: urlRequest)
+        let request = RestRequest(method: .post,
+                                  url: "http://\(awsLambdaRuntimeAPI)/2018-06-01/runtime/invocation/\(requestId)/error")
+        request.messageBody = httpBody
+        
+        request.response { resp in
+            print(resp)
+        }
     }
 
     public func registerLambda(_ name: String, handlerFunction: @escaping (JSONDictionary, Context) throws -> JSONDictionary) {

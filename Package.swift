@@ -11,11 +11,15 @@ let package = Package(
             targets: ["AWSLambdaSwift"]
         ),
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/IBM-Swift/SwiftyRequest.git", from: "3.0.0")
+    ],
     targets: [
         .target(
             name: "AWSLambdaSwift",
-            dependencies: []
+            dependencies: [
+                "SwiftyRequest"
+            ]
         ),
     ]
 )
